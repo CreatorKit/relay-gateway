@@ -70,6 +70,7 @@
 #define URL_PATH_SIZE			(16)
 #define OPERATION_TIMEOUT		(5000)
 #define FLOW_SERVER_CONNECT_TRIALS	(5)
+#define HEARTBEAT 			(60)
 
 /***************************************************************************************************
  * Globals
@@ -298,6 +299,7 @@ void mySubscribeEventCallback(FlowMessagingSubscription callbackData, FlowTopicE
 		LOG(LOG_DBG, "fromUser = %s\n", FlowTopicEvent_GetFromUserID(eventData));
 	LOG(LOG_DBG, "/**************** end **********************/\n");
 	ChangeRelayState(parseXML(FlowTopicEvent_GetContent(eventData)));
+	PublishToDeviceTopic();
 }
 
 /**
@@ -463,7 +465,7 @@ int main(int argc, char **argv)
     	while(1)
     	{
     		PublishToDeviceTopic();
-    		sleep(60);
+    		sleep(HEARTBEAT);
     	}
 	 /*Application should never come here*/
 	if (AwaClientSession_Disconnect(clientSession) != AwaError_Success)
