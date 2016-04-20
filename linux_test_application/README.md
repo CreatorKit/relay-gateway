@@ -7,8 +7,9 @@ just fill in the fiels properly in flow_access.cfg file and put it in /usr direc
 
 ## Prerequisites
 Prior to running relay gateway test application, make sure that:
+```
 -flow_access.cfg file is kept in /usr directory.
-
+```
 ## Running Application on Ci40 board
 Realy gateway test Application upon running gives output similar to this :
 
@@ -46,6 +47,7 @@ Enter the operation you want to perform(on/off) : off
 Publish Event Successful
 
 /********** Received Notification ***********/ 
+```
 event Topic = DeviceStatus
 event TopicDeviceId = 2b01138b-3b53-4ecb-8f8f-61374cd80489
 event EventID = 1d9504ff-9c56-4557-895b-5ae8e170d193
@@ -54,6 +56,7 @@ event ExpiryTime = Wed Apr 20 07:17:44 2016
 content type = application/pidf+xml
 content = 2b01138b-3b53-4ecb-8f8f-61374cd80489|1|/3306/0/5850/1|0|/3306/0/5850/2
 fromDevice = 2b01138b-3b53-4ecb-8f8f-61374cd80489
+```
 /**************** end **********************/
 
 1. Change the Device setting and publish to device topic
