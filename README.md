@@ -1,3 +1,6 @@
+
+![Creator logo](docs/creatorlogo.png)
+
 # Relay gateway application
 
 ## Overview
@@ -38,6 +41,8 @@ This process is shown on image below
 App needs to know where your bootstrap server is. Put your bootstrap URL in application config file that can be found under
     /etc/config/relay_gateway.cfg
 
+## Application flow diagram
+![Relay-Gateway Controller Sequence Diagram](docs/relay-gateway-seq-diag.png)
 
 ## Running Application on Ci40 board
 Relay gateway application can be started from the command line as:
