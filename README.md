@@ -44,6 +44,11 @@ App needs to know where your bootstrap server is. Put your bootstrap URL in appl
 ## Application flow diagram
 ![Relay-Gateway Controller Sequence Diagram](docs/relay-gateway-seq-diag.png)
 
+## Using OpenWrt SDK to build standalone package
+
+Please refer [OpenWrt-SDK-build-instructions](https://github.com/CreatorKit/openwrt-ckt-feeds#building-creatorkit-packages-using-pre-compiled-openwrt-sdk-for-ci40-marduk) for exact build instructions.
+
+
 ## Running Application on Ci40 board
 Relay gateway application can be started from the command line as:
 
