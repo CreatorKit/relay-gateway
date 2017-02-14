@@ -139,6 +139,8 @@ uint8_t *g_cert = NULL;
 const char *g_bootstrapServerUrl = NULL;
 /** Keeps path to certificate file */
 char *g_certFilePath = NULL;
+/** security mode for connection **/
+AwaSecurityMode g_securityMode = AwaSecurityMode_NoSec;
 
 config_t cfg;
 
@@ -237,6 +239,7 @@ static AwaResult RelayStateResourceHandler(AwaStaticClient * client,
              ChangeRelayState(g_relayState);
              *changed = true;
              return AwaResult_SuccessChanged;
+
          default:
              return AwaResult_InternalError;
      }
@@ -253,6 +256,7 @@ static void PrintUsage(const char *program)
         " -v : Debug level from 1 to 5\n"
         "      fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
         "      default is info.\n"
+        " -c : path to configuration"
         " -h : Print help and exit.\n\n",
         program);
 }
@@ -287,15 +291,12 @@ bool ReadCertificate(const char *filePath, uint8_t **certificate) {
     return true;
 }
 
-
 /**
  * @brief Reads config file and save properties into global variables
  * @param filePath path to config file
  * @return true on successful read false otherwise
  */
 bool ReadConfigFile(const char *filePath) {
-
-
     config_init(&cfg);
     if(! config_read_file(&cfg, filePath))
     {
@@ -307,10 +308,18 @@ bool ReadConfigFile(const char *filePath) {
         LOG(LOG_ERR, "Config file does not contain BOOTSTRAP_URL property.");
         return false;
     }
+    else
+    {
+        LOG(LOG_INFO, "Boostrap: %s", g_bootstrapServerUrl);
+    }
     if(!config_lookup_string(&cfg, "CERT_FILE_PATH", (const char **)&g_certFilePath))
     {
-        LOG(LOG_ERR, "Config file does not contain CERT_FILE_PATH property.");
-        return false;
+        LOG(LOG_WARN, "Config file does not contain CERT_FILE_PATH property, client will run in non secure mode.");
+        g_certFilePath = NULL;
+    }
+    else
+    {
+        g_securityMode = AwaSecurityMode_Certificate;
     }
 
     return true;
@@ -328,11 +337,11 @@ static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
 
     while (1)
     {
-    	opt = getopt(argc, argv, "l:v:c:");
-	if (opt == -1)
-	{
+        opt = getopt(argc, argv, "l:v:c:h");
+        if (opt == -1)
+        {
             break;
-	}
+        }
         switch (opt)
         {
             case 'l':
@@ -358,7 +367,7 @@ static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
                 return 0;
 
             case 'c':
-                configFilePath = malloc(strlen(optarg));
+                configFilePath = malloc(strlen(optarg) + 1);
                 sprintf(configFilePath, "%s", optarg);
                 break;
 
@@ -368,7 +377,7 @@ static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
         }
     }
     if (configFilePath == NULL) {
-        configFilePath = malloc(strlen(DEFAULT_PATH_CONFIG_FILE));
+        configFilePath = malloc(strlen(DEFAULT_PATH_CONFIG_FILE) + 1);
         sprintf(configFilePath, "%s", DEFAULT_PATH_CONFIG_FILE);
     }
 
@@ -407,7 +416,6 @@ void ChangeRelayState(bool state)
 
     LOG(LOG_INFO, "Changed relay state on Ci40 board to %d", state);
 }
-
 
 /**
  * @brief Add all resource definitions that belong to object.
@@ -544,7 +552,7 @@ static bool SetResourceOperationHandlers(AwaStaticClient *client)
     return success;
 }
 
-static AwaStaticClient *PrepareStaticCLient()
+static AwaStaticClient *PrepareStaticClient()
 {
     AwaStaticClient * awaClient = AwaStaticClient_New();
 
@@ -559,8 +567,9 @@ static AwaStaticClient *PrepareStaticCLient()
     AwaStaticClient_SetCoAPListenAddressPort(awaClient, "0.0.0.0", CLIENT_COAP_PORT);
     AwaStaticClient_SetBootstrapServerURI(awaClient, g_bootstrapServerUrl);
     AwaStaticClient_Init(awaClient);
-    AwaStaticClient_SetCertificate(awaClient, g_cert, strlen((const char *)g_cert), AwaCertificateFormat_PEM);
-
+    if (g_securityMode == AwaSecurityMode_Certificate) {
+        AwaStaticClient_SetCertificate(awaClient, g_cert, strlen((const char *)g_cert), AwaCertificateFormat_PEM);
+    }
     return awaClient;
 }
 
@@ -597,9 +606,7 @@ int main(int argc, char **argv)
     }
 
     signal(SIGINT, CtrlCHandler);
-
     LOG(LOG_INFO, "Relay Gateway Application ...");
-
     LOG(LOG_INFO, "------------------------\n");
 
     int tmp = 0;
@@ -611,21 +618,27 @@ int main(int argc, char **argv)
         g_keepRunning = false;
     }
 
-    LOG(LOG_INFO, "Looking for certificate file under : %s", g_certFilePath);
-    while (!ReadCertificate(g_certFilePath, &g_cert))
+    if (g_securityMode == AwaSecurityMode_Certificate)
     {
-        sleep(2);
-        if (g_keepRunning == false)
+        LOG(LOG_INFO, "Looking for certificate file under : %s", g_certFilePath);
+        while (!ReadCertificate(g_certFilePath, &g_cert))
         {
-            break;
+            sleep(2);
+            if (g_keepRunning == false)
+            {
+                break;
+            }
         }
     }
 
     AwaStaticClient * staticClient = NULL;
     if (g_keepRunning)
     {
-        LOG(LOG_INFO, "Certificate found. ");
-        staticClient = PrepareStaticCLient();
+        if (g_securityMode == AwaSecurityMode_Certificate)
+        {
+            LOG(LOG_INFO, "Certificate found. ");
+        }
+        staticClient = PrepareStaticClient();
     }
 
     if (g_keepRunning && staticClient == NULL)
@@ -656,7 +669,6 @@ int main(int argc, char **argv)
     {
         LOG(LOG_INFO, "Observing IPSO object on path /3201/0/5550");
     }
-
 
     while (g_keepRunning) {
         AwaStaticClient_Process(staticClient);
