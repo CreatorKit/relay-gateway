@@ -68,8 +68,8 @@
 #define URL_PATH_SIZE               (16)
 #define RELAY_GPIO_PIN              "73"
 #define CLIENT_NAME                 "RelayDevice"
-#define CLIENT_COAP_PORT            (6001)
-#define DEFAULT_PATH_CONFIG_FILE    "/etc/config/relay_gateway.cfg"
+#define CLIENT_COAP_PORT            (6011)
+#define DEFAULT_PATH_CONFIG_FILE    "/root/Ci40-gatewayRelay.cfg"
 
 //! @endcond
 
@@ -119,8 +119,6 @@ typedef struct
     /*@}*/
 } Object;
 
-
-
 /***************************************************************************************************
  * Globals
  **************************************************************************************************/
@@ -143,6 +141,10 @@ char *g_certFilePath = NULL;
 AwaSecurityMode g_securityMode = AwaSecurityMode_NoSec;
 
 config_t cfg;
+
+static char* g_clientName = CLIENT_NAME;
+static char* g_phyAddress = IP_ADDRESS;
+static int g_clientCoapPort = CLIENT_COAP_PORT;
 
 /** Initializing objects. */
 static Object objects[] =
@@ -303,6 +305,7 @@ bool ReadConfigFile(const char *filePath) {
         LOG(LOG_ERR, "Failed to open config file at path : %s", filePath);
         return false;
     }
+
     if(!config_lookup_string(&cfg, "BOOTSTRAP_URL", &g_bootstrapServerUrl))
     {
         LOG(LOG_ERR, "Config file does not contain BOOTSTRAP_URL property.");
@@ -312,6 +315,7 @@ bool ReadConfigFile(const char *filePath) {
     {
         LOG(LOG_INFO, "Boostrap: %s", g_bootstrapServerUrl);
     }
+
     if(!config_lookup_string(&cfg, "CERT_FILE_PATH", (const char **)&g_certFilePath))
     {
         LOG(LOG_WARN, "Config file does not contain CERT_FILE_PATH property, client will run in non secure mode.");
@@ -321,6 +325,15 @@ bool ReadConfigFile(const char *filePath) {
     {
         g_securityMode = AwaSecurityMode_Certificate;
     }
+
+    config_lookup_string(&cfg, "CLIENT_NAME", (const char**)&g_clientName);
+    LOG(LOG_INFO, "Client name:%s", g_clientName);
+
+    config_lookup_string(&cfg, "ADDRESS", (const char**)&g_phyAddress);
+    LOG(LOG_INFO, "IP address:%s", g_phyAddress);
+
+    config_lookup_int(&cfg, "COAP_PORT", &g_clientCoapPort);
+    LOG(LOG_INFO, "Client coap port:%d", g_clientCoapPort);
 
     return true;
 }
@@ -563,8 +576,8 @@ static AwaStaticClient *PrepareStaticClient()
     }
 
     AwaStaticClient_SetLogLevel(AwaLogLevel_Warning);
-    AwaStaticClient_SetEndPointName(awaClient, CLIENT_NAME);
-    AwaStaticClient_SetCoAPListenAddressPort(awaClient, "0.0.0.0", CLIENT_COAP_PORT);
+    AwaStaticClient_SetEndPointName(awaClient, g_clientName);
+    AwaStaticClient_SetCoAPListenAddressPort(awaClient, g_phyAddress, g_clientCoapPort);
     AwaStaticClient_SetBootstrapServerURI(awaClient, g_bootstrapServerUrl);
     AwaStaticClient_Init(awaClient);
     if (g_securityMode == AwaSecurityMode_Certificate) {
