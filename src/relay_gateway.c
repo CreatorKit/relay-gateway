@@ -45,7 +45,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <fcntl.h>
-#include <libconfig.h>
+#include "libconfig.h"
 #include "awa/static.h"
 #include "log.h"
 
@@ -57,7 +57,7 @@
 #define ARRAY_SIZE(x) ((sizeof x) / (sizeof *x))
 
 //! @cond Doxygen_Suppress
-#define IP_ADDRESS                  "127.0.0.1"
+#define IP_ADDRESS                  "0.0.0.0"
 #define RELAY_STATE                 "DigitalOutputState"
 #define RELAY_OBJECT_NAME           "Relay"
 #define RELAY_OBJECT_ID             (3201)
@@ -68,21 +68,22 @@
 #define URL_PATH_SIZE               (16)
 #define RELAY_GPIO_PIN              "73"
 #define CLIENT_NAME                 "RelayDevice"
-#define CLIENT_COAP_PORT            (6001)
-#define DEFAULT_PATH_CONFIG_FILE    "/etc/config/relay_gateway.cfg"
+#define CLIENT_COAP_PORT            (6011)
+#define DEFAULT_PATH_CONFIG_FILE    "/root/Ci40-gatewayRelay.cfg"
 
 //! @endcond
 
-static AwaResult RelayStateResourceHandler(client,
-                                              operation,
-                                              objectID,
-                                              objectInstanceID,
-                                              resourceID,
-                                              resourceInstanceID,
-                                              dataPointer,
-                                              dataSize,
-                                              changed);
+static AwaResult RelayStateResourceHandler(AwaStaticClient * client,
+                                               AwaOperation operation,
+                                               AwaObjectID objectID,
+                                               AwaObjectInstanceID objectInstanceID,
+                                               AwaResourceID resourceID,
+                                               AwaResourceInstanceID resourceInstanceID,
+                                               void ** dataPointer,
+                                               size_t * dataSize,
+                                               bool * changed);
 
+void ChangeRelayState(bool state);
 /***************************************************************************************************
  * Typedef
  **************************************************************************************************/
@@ -97,8 +98,8 @@ typedef struct
     AwaResourceInstanceID instanceID; /**< resource instance ID */
     AwaResourceType type; /**< type of resource e.g. bool, string, integer etc. */
     const char *name; /**< resource name */
-    bool isMandatory; /**< whethe this is mandatory resource or not. */
-    AwaResourceOperations operation; /**< Operation types that can be performed on that reosurce. */
+    bool isMandatory; /**< is it mandatory resource or not. */
+    AwaResourceOperations operation; /**< Operation types that can be performed on that resource. */
     AwaStaticClientHandler handler;
     /*@}*/
 } Resource;
@@ -118,8 +119,6 @@ typedef struct
     /*@}*/
 } Object;
 
-
-
 /***************************************************************************************************
  * Globals
  **************************************************************************************************/
@@ -133,13 +132,25 @@ static volatile int g_keepRunning = 1;
 /** Keeps current relay state. */
 bool g_relayState = false;
 /** Keeps certificate */
-char *g_cert = NULL;
-/** Keeps bootstrap server url */
+uint8_t *g_cert = NULL;
+
+/** Holds data for psk */
+uint8_t* g_pskIdentity = NULL;
+uint8_t* g_pskKey = NULL;
+uint8_t g_pskKeySize = 0;
+
+/** Keeps bootstrap server URL */
 const char *g_bootstrapServerUrl = NULL;
 /** Keeps path to certificate file */
 char *g_certFilePath = NULL;
+/** security mode for connection **/
+AwaSecurityMode g_securityMode = AwaSecurityMode_NoSec;
 
 config_t cfg;
+
+static char* g_clientName = CLIENT_NAME;
+static char* g_phyAddress = IP_ADDRESS;
+static int g_clientCoapPort = CLIENT_COAP_PORT;
 
 /** Initializing objects. */
 static Object objects[] =
@@ -169,9 +180,9 @@ static Object objects[] =
 
 /**
  * Reads current value of specified digital output and stores it on value.
- * @param *value stores gpio value
+ * @param value stores GPIO value
  * @param pin number to read
- * Returns 0 upon succesfull read, -1 otherwise.
+ * Returns 0 upon successful read, -1 otherwise.
  */
 static int ReadGPIO(bool * value, int pin)
 {
@@ -237,12 +248,14 @@ static AwaResult RelayStateResourceHandler(AwaStaticClient * client,
              *changed = true;
              return AwaResult_SuccessChanged;
 
+         default:
+             return AwaResult_InternalError;
      }
  }
 
 /**
  * @brief Prints relay_gateway_appd usage.
- * @param *program holds application name.
+ * @param program holds application name.
  */
 static void PrintUsage(const char *program)
 {
@@ -251,18 +264,18 @@ static void PrintUsage(const char *program)
         " -v : Debug level from 1 to 5\n"
         "      fatal(1), error(2), warning(3), info(4), debug(5) and max(>5)\n"
         "      default is info.\n"
+        " -c : path to configuration"
         " -h : Print help and exit.\n\n",
         program);
 }
 
 /**
- * @bried Reds certificate from given file path
- * @param *filePath path to file containing certificate
- * @param **certificate will hold read certificate
- * @return true on successfull read, false otherwise
+ * @brief Reds certificate from given file path
+ * @param filePath path to file containing certificate
+ * @param certificate will hold read certificate
+ * @return true on successful read, false otherwise
  */
-bool ReadCertificate(const char *filePath, char **certificate) {
-    char *fileContents;
+bool ReadCertificate(const char *filePath, uint8_t **certificate) {
     size_t inputFileSize;
     FILE *inputFile = fopen(filePath, "rb");
     if (inputFile == NULL)
@@ -281,36 +294,88 @@ bool ReadCertificate(const char *filePath, char **certificate) {
     fread(*certificate, sizeof(char), inputFileSize, inputFile);
     if (fclose(inputFile) == EOF)
     {
-        LOG(LOG_WARN, "Couldn't close cerificate file.");
+        LOG(LOG_WARN, "Couldn't close certificate file.");
     }
     return true;
 }
 
+/**
+ * Do additional parsing of PSK related data from config.
+ */
+bool handlePsk() {
+    int txtSize = strlen((const char*)g_pskKey);
+    if (txtSize % 2 != 0)
+    {
+        LOG(LOG_ERR, "PSK key size is wrong.");
+        return false;
+    }
+    g_pskKeySize = txtSize / 2;
+    uint8_t* tmp = malloc(g_pskKeySize);
+    int t, y;
+    for(t = 0, y= 0; t < txtSize; t+=2, y++)
+    {
+        sscanf((const char *)&(g_pskKey[t]), "%2hhx", &(tmp[y]));
+    }
+
+    free(g_pskKey);
+    g_pskKey = tmp;
+    return true;
+}
 
 /**
  * @brief Reads config file and save properties into global variables
- * @param *filePath path to config file
- * @return true on succesfull readm false otherwise
+ * @param filePath path to config file
+ * @return true on successful read false otherwise
  */
 bool ReadConfigFile(const char *filePath) {
-
-
     config_init(&cfg);
     if(! config_read_file(&cfg, filePath))
     {
         LOG(LOG_ERR, "Failed to open config file at path : %s", filePath);
         return false;
     }
+
     if(!config_lookup_string(&cfg, "BOOTSTRAP_URL", &g_bootstrapServerUrl))
     {
         LOG(LOG_ERR, "Config file does not contain BOOTSTRAP_URL property.");
         return false;
     }
-    if(!config_lookup_string(&cfg, "CERT_FILE_PATH", &g_certFilePath))
+    else
     {
-        LOG(LOG_ERR, "Config file does not contain CERT_FILE_PATH property.");
-        return false;
+        LOG(LOG_INFO, "Boostrap: %s", g_bootstrapServerUrl);
     }
+
+    if(!config_lookup_string(&cfg, "CERT_FILE_PATH", (const char **)&g_certFilePath))
+    {
+        g_certFilePath = NULL;
+    }
+    else
+    {
+        g_securityMode = AwaSecurityMode_Certificate;
+    }
+
+    if(config_lookup_string(&cfg, "PSK_IDENTITY", (const char **)&g_pskIdentity)) {
+        if(config_lookup_string(&cfg, "PSK_KEY", (const char **)&g_pskKey)) {
+            if (handlePsk() == false) {
+                return false;
+            }
+            g_securityMode = AwaSecurityMode_PreSharedKey;
+        }
+        else
+        {
+            LOG(LOG_WARN, "Config file contains key PSK_IDENTITY but doesn't have field PSK_KEY!");
+            return false;
+        }
+    }
+
+    config_lookup_string(&cfg, "CLIENT_NAME", (const char**)&g_clientName);
+    LOG(LOG_INFO, "Client name:%s", g_clientName);
+
+    config_lookup_string(&cfg, "ADDRESS", (const char**)&g_phyAddress);
+    LOG(LOG_INFO, "IP address:%s", g_phyAddress);
+
+    config_lookup_int(&cfg, "COAP_PORT", &g_clientCoapPort);
+    LOG(LOG_INFO, "Client coap port:%d", g_clientCoapPort);
 
     return true;
 }
@@ -322,17 +387,16 @@ bool ReadConfigFile(const char *filePath) {
 static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
 {
     int opt, tmp;
-    bool isConfigFileSpecified = false;
     opterr = 0;
     char *configFilePath = NULL;
 
     while (1)
     {
-    	opt = getopt(argc, argv, "l:v:c:");
-	if (opt == -1)
-	{
+        opt = getopt(argc, argv, "l:v:c:h");
+        if (opt == -1)
+        {
             break;
-	}
+        }
         switch (opt)
         {
             case 'l':
@@ -358,7 +422,7 @@ static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
                 return 0;
 
             case 'c':
-                configFilePath = malloc(strlen(optarg));
+                configFilePath = malloc(strlen(optarg) + 1);
                 sprintf(configFilePath, "%s", optarg);
                 break;
 
@@ -368,7 +432,7 @@ static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
         }
     }
     if (configFilePath == NULL) {
-        configFilePath = malloc(strlen(DEFAULT_PATH_CONFIG_FILE));
+        configFilePath = malloc(strlen(DEFAULT_PATH_CONFIG_FILE) + 1);
         sprintf(configFilePath, "%s", DEFAULT_PATH_CONFIG_FILE);
     }
 
@@ -386,12 +450,12 @@ static int ParseCommandArgs(int argc, char *argv[], const char **fptr)
 
 /**
  * @brief Handles Ctrl+C signal. Helps exit app gracefully.
+ * @param signal id of signal to be handled
  */
 static void CtrlCHandler(int signal) {
     LOG(LOG_INFO, "Exit triggered...");
     g_keepRunning = 0;
 }
-
 
 /**
  * @brief Turn on or off relay on click board depending on specified state.
@@ -408,10 +472,9 @@ void ChangeRelayState(bool state)
     LOG(LOG_INFO, "Changed relay state on Ci40 board to %d", state);
 }
 
-
 /**
  * @brief Add all resource definitions that belong to object.
- * @param *object whose resources are to be defined.
+ * @param object whose resources are to be defined.
  * @return pointer to flow object definition.
  */
 static bool AddResourceDefinitions(AwaStaticClient *client, Object *object)
@@ -452,8 +515,8 @@ static bool AddResourceDefinitions(AwaStaticClient *client, Object *object)
 
 
 /**
- * @brief Define all objects and its resources with client deamon.
- * @param *session holds client session.
+ * @brief Define all objects and its resources with client daemon.
+ * @param client instance of client used for defining objects.
  * @return true if all objects are successfully defined, false otherwise.
  */
 static bool DefineClientObjects(AwaStaticClient *client)
@@ -463,7 +526,7 @@ static bool DefineClientObjects(AwaStaticClient *client)
 
     if (client == NULL)
     {
-        LOG(LOG_ERR, "Null parameter passsed to %s()", __func__);
+        LOG(LOG_ERR, "Null parameter passed to %s()", __func__);
         return false;
     }
 
@@ -483,15 +546,15 @@ static bool DefineClientObjects(AwaStaticClient *client)
 
 /**
  * @brief Create object instances on client daemon.
- * @param *session holds client session.
- * @return true if objects are successfully defined on client, false otherwise.
+ * @param client instance of client used for object creation.
+ * @return true if objects are successfully created on client, false otherwise.
  */
 static bool CreateObjectInstances(AwaStaticClient *client)
 {
     bool success = true;
     if (client == NULL)
     {
-        LOG(LOG_ERR, "Null parameter passsed to %s()", __func__);
+        LOG(LOG_ERR, "Null parameter passed to %s()", __func__);
         return false;
     }
 
@@ -511,16 +574,13 @@ static bool CreateObjectInstances(AwaStaticClient *client)
     return success;
 }
 
-
-
 /*
  * This function sets resource operation handlers.
- * @param *session holds client session
+ * @param client instance of client used to define operation handlers.
  * @return true when all handlers are set properly, false otherwise.
  */
 static bool SetResourceOperationHandlers(AwaStaticClient *client)
 {
-    char path[URL_PATH_SIZE] = {0};
     int i,j;
     bool success = true;
 
@@ -547,7 +607,7 @@ static bool SetResourceOperationHandlers(AwaStaticClient *client)
     return success;
 }
 
-static AwaStaticClient *PrepareStaticCLient()
+static AwaStaticClient *PrepareStaticClient()
 {
     AwaStaticClient * awaClient = AwaStaticClient_New();
 
@@ -558,15 +618,20 @@ static AwaStaticClient *PrepareStaticCLient()
     }
 
     AwaStaticClient_SetLogLevel(AwaLogLevel_Warning);
-    AwaStaticClient_SetEndPointName(awaClient, CLIENT_NAME);
-    AwaStaticClient_SetCoAPListenAddressPort(awaClient, "0.0.0.0", CLIENT_COAP_PORT);
+    AwaStaticClient_SetEndPointName(awaClient, g_clientName);
+    AwaStaticClient_SetCoAPListenAddressPort(awaClient, g_phyAddress, g_clientCoapPort);
     AwaStaticClient_SetBootstrapServerURI(awaClient, g_bootstrapServerUrl);
     AwaStaticClient_Init(awaClient);
-    AwaStaticClient_SetCertificate(awaClient, g_cert, strlen(g_cert), AwaSecurityMode_Certificate);
+    if (g_securityMode == AwaSecurityMode_Certificate) {
+        AwaStaticClient_SetCertificate(awaClient, g_cert, strlen((const char *)g_cert), AwaCertificateFormat_PEM);
+    }
+    else
+    if (g_securityMode == AwaSecurityMode_PreSharedKey) {
+        AwaStaticClient_SetPSK(awaClient, g_pskIdentity, g_pskKey, g_pskKeySize);
+    }
 
     return awaClient;
 }
-
 
 /**
  * @brief  Relay gateway application observes the IPSO resource for relay
@@ -575,7 +640,7 @@ static AwaStaticClient *PrepareStaticCLient()
  */
 int main(int argc, char **argv)
 {
-    int i=0, ret;
+    int ret;
     FILE *configFile;
     const char *fptr = NULL;
 
@@ -601,9 +666,7 @@ int main(int argc, char **argv)
     }
 
     signal(SIGINT, CtrlCHandler);
-
     LOG(LOG_INFO, "Relay Gateway Application ...");
-
     LOG(LOG_INFO, "------------------------\n");
 
     int tmp = 0;
@@ -615,21 +678,32 @@ int main(int argc, char **argv)
         g_keepRunning = false;
     }
 
-    LOG(LOG_INFO, "Looking for certificate file under : %s", g_certFilePath);
-    while (!ReadCertificate(g_certFilePath, &g_cert))
+    if (g_securityMode == AwaSecurityMode_Certificate)
     {
-        sleep(2);
-        if (g_keepRunning == false)
+        LOG(LOG_INFO, "Looking for certificate file under : %s", g_certFilePath);
+        while (!ReadCertificate(g_certFilePath, &g_cert))
         {
-            break;
+            sleep(2);
+            if (g_keepRunning == false)
+            {
+                break;
+            }
         }
+    }
+
+    if (g_pskKeySize != 0)
+    {
+        LOG(LOG_INFO, "Using PSK Identity: %s\n", g_pskIdentity);
     }
 
     AwaStaticClient * staticClient = NULL;
     if (g_keepRunning)
     {
-        LOG(LOG_INFO, "Certificate found. ");
-        staticClient = PrepareStaticCLient();
+        if (g_securityMode == AwaSecurityMode_Certificate)
+        {
+            LOG(LOG_INFO, "Certificate found. ");
+        }
+        staticClient = PrepareStaticClient();
     }
 
     if (g_keepRunning && staticClient == NULL)
@@ -660,7 +734,6 @@ int main(int argc, char **argv)
     {
         LOG(LOG_INFO, "Observing IPSO object on path /3201/0/5550");
     }
-
 
     while (g_keepRunning) {
         AwaStaticClient_Process(staticClient);
