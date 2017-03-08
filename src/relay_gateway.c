@@ -57,7 +57,7 @@
 #define ARRAY_SIZE(x) ((sizeof x) / (sizeof *x))
 
 //! @cond Doxygen_Suppress
-#define IP_ADDRESS                  "127.0.0.1"
+#define IP_ADDRESS                  "0.0.0.0"
 #define RELAY_STATE                 "DigitalOutputState"
 #define RELAY_OBJECT_NAME           "Relay"
 #define RELAY_OBJECT_ID             (3201)
@@ -133,6 +133,12 @@ static volatile int g_keepRunning = 1;
 bool g_relayState = false;
 /** Keeps certificate */
 uint8_t *g_cert = NULL;
+
+/** Holds data for psk */
+uint8_t* g_pskIdentity = NULL;
+uint8_t* g_pskKey = NULL;
+uint8_t g_pskKeySize = 0;
+
 /** Keeps bootstrap server URL */
 const char *g_bootstrapServerUrl = NULL;
 /** Keeps path to certificate file */
@@ -294,6 +300,29 @@ bool ReadCertificate(const char *filePath, uint8_t **certificate) {
 }
 
 /**
+ * Do additional parsing of PSK related data from config.
+ */
+bool handlePsk() {
+    int txtSize = strlen((const char*)g_pskKey);
+    if (txtSize % 2 != 0)
+    {
+        LOG(LOG_ERR, "PSK key size is wrong.");
+        return false;
+    }
+    g_pskKeySize = txtSize / 2;
+    uint8_t* tmp = malloc(g_pskKeySize);
+    int t, y;
+    for(t = 0, y= 0; t < txtSize; t+=2, y++)
+    {
+        sscanf((const char *)&(g_pskKey[t]), "%2hhx", &(tmp[y]));
+    }
+
+    free(g_pskKey);
+    g_pskKey = tmp;
+    return true;
+}
+
+/**
  * @brief Reads config file and save properties into global variables
  * @param filePath path to config file
  * @return true on successful read false otherwise
@@ -318,12 +347,25 @@ bool ReadConfigFile(const char *filePath) {
 
     if(!config_lookup_string(&cfg, "CERT_FILE_PATH", (const char **)&g_certFilePath))
     {
-        LOG(LOG_WARN, "Config file does not contain CERT_FILE_PATH property, client will run in non secure mode.");
         g_certFilePath = NULL;
     }
     else
     {
         g_securityMode = AwaSecurityMode_Certificate;
+    }
+
+    if(config_lookup_string(&cfg, "PSK_IDENTITY", (const char **)&g_pskIdentity)) {
+        if(config_lookup_string(&cfg, "PSK_KEY", (const char **)&g_pskKey)) {
+            if (handlePsk() == false) {
+                return false;
+            }
+            g_securityMode = AwaSecurityMode_PreSharedKey;
+        }
+        else
+        {
+            LOG(LOG_WARN, "Config file contains key PSK_IDENTITY but doesn't have field PSK_KEY!");
+            return false;
+        }
     }
 
     config_lookup_string(&cfg, "CLIENT_NAME", (const char**)&g_clientName);
@@ -583,6 +625,11 @@ static AwaStaticClient *PrepareStaticClient()
     if (g_securityMode == AwaSecurityMode_Certificate) {
         AwaStaticClient_SetCertificate(awaClient, g_cert, strlen((const char *)g_cert), AwaCertificateFormat_PEM);
     }
+    else
+    if (g_securityMode == AwaSecurityMode_PreSharedKey) {
+        AwaStaticClient_SetPSK(awaClient, g_pskIdentity, g_pskKey, g_pskKeySize);
+    }
+
     return awaClient;
 }
 
@@ -642,6 +689,11 @@ int main(int argc, char **argv)
                 break;
             }
         }
+    }
+
+    if (g_pskKeySize != 0)
+    {
+        LOG(LOG_INFO, "Using PSK Identity: %s\n", g_pskIdentity);
     }
 
     AwaStaticClient * staticClient = NULL;
